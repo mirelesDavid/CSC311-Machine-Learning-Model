@@ -5,7 +5,32 @@ Requires: model.npz (Pre-trained model)
 """
 import numpy as np
 import pandas as pd
-import re
+
+# lightweight replacement for `re.match(r'^(\d+)', s)` without importing `re`
+class _SimpleRe:
+    class _Match:
+        def __init__(self, s):
+            self._s = s
+        def group(self, i=0):
+            if i == 1:
+                return self._s
+            return None
+
+    @staticmethod
+    def match(pattern, string):
+        # Only supports patterns like r'^(\d+)' used in this file:
+        s = str(string).lstrip()
+        if not s:
+            return None
+        i = 0
+        while i < len(s) and s[i].isdigit():
+            i += 1
+        if i == 0:
+            return None
+        return _SimpleRe._Match(s[:i])
+
+# expose as `re` so existing code calling `re.match(...)` continues to work
+re = _SimpleRe
 
 # ============================================================================
 # 1. MODEL DEFINITIONS (Required for pickle to load the classes)
@@ -371,7 +396,29 @@ def predict_all(filename):
     return _MODEL.predict(X)
 
 if __name__ == "__main__":
-    predictions = predict_all("training_data_clean.csv")
+    predictions = predict_all("test_data.csv")
     
     for pred in predictions:
         print(pred)
+
+    # Compute and show test accuracy if a ground-truth column is present
+    # try:
+    #     df_test = pd.read_csv("test_data.csv")
+    # except Exception as e:
+    #     print("Could not reload test_data.csv for accuracy:", e)
+    # else:
+    #     # Heuristic search for a ground-truth column
+    #     cols = list(df_test.columns)
+    #     candidates = [c for c in cols if any(k in c.lower() for k in ("label", "ground", "true", "target", "which model", "model generated"))]
+    #     if not candidates:
+    #         print("No ground-truth column found in test_data.csv (looked for label/true/ground/target/which model). Cannot compute accuracy.")
+    #     else:
+    #         gt_col = candidates[0]
+    #         y_true = df_test[gt_col].astype(str).values
+    #         y_pred = np.array(predictions).astype(str)
+    #         n = min(len(y_true), len(y_pred))
+    #         if n == 0:
+    #             print("No samples to evaluate.")
+    #         else:
+    #             acc = (y_true[:n] == y_pred[:n]).mean()
+    #             print(f"Test accuracy (column='{gt_col}'): {acc:.4f} over {n} samples")
