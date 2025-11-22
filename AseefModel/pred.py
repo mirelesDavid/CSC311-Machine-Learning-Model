@@ -6,391 +6,435 @@ Requires: model.npz (Pre-trained model)
 import numpy as np
 import pandas as pd
 
-# lightweight replacement for `re.match(r'^(\d+)', s)` without importing `re`
-class _SimpleRe:
+
+class _SimpleRegex:
+    """Lightweight regex replacement to avoid importing re module"""
+
     class _Match:
-        def __init__(self, s):
-            self._s = s
-        def group(self, i=0):
-            if i == 1:
-                return self._s
+        def __init__(self, matchedString):
+            self._matchedString = matchedString
+
+        def group(self, index=0):
+            if index == 1:
+                return self._matchedString
             return None
 
     @staticmethod
     def match(pattern, string):
-        # Only supports patterns like r'^(\d+)' used in this file:
-        s = str(string).lstrip()
-        if not s:
+        stringToMatch = str(string).lstrip()
+        if not stringToMatch:
             return None
-        i = 0
-        while i < len(s) and s[i].isdigit():
-            i += 1
-        if i == 0:
+
+        digitCount = 0
+        while digitCount < len(stringToMatch) and stringToMatch[digitCount].isdigit():
+            digitCount += 1
+
+        if digitCount == 0:
             return None
-        return _SimpleRe._Match(s[:i])
 
-# expose as `re` so existing code calling `re.match(...)` continues to work
-re = _SimpleRe
+        return _SimpleRegex._Match(stringToMatch[:digitCount])
 
-# ============================================================================
-# 1. MODEL DEFINITIONS (Required for pickle to load the classes)
-# ============================================================================
+
+re = _SimpleRegex
+
 
 class Node:
     def __init__(self, feature=None, threshold=None, left=None, right=None, value=None):
-        self.feature, self.threshold, self.left, self.right, self.value = feature, threshold, left, right, value
+        self.feature = feature
+        self.threshold = threshold
+        self.left = left
+        self.right = right
+        self.value = value
 
-class PureDT:
-    def __init__(self, max_depth=8, min_samples_split=5, max_features='sqrt', class_weight=None):
-        self.max_depth, self.min_samples_split, self.max_features, self.class_weight = max_depth, min_samples_split, max_features, class_weight
+
+class DecisionTree:
+    def __init__(self, maxDepth=8, minSamplesSplit=5, maxFeatures='sqrt', classWeight=None):
+        self.maxDepth = maxDepth
+        self.minSamplesSplit = minSamplesSplit
+        self.maxFeatures = maxFeatures
+        self.classWeight = classWeight
         self.tree = None
-    
-    # Methods required for inference only
-    def _predict_one(self, x, node):
-        if node.value is not None: return node.value
-        if x[node.feature] <= node.threshold: return self._predict_one(x, node.left)
-        return self._predict_one(x, node.right)
 
-    def predict_proba(self, X):
-        # Simplified inference logic for speed
-        res = []
-        base = {c: 0.0 for c in self.classes_}
-        for row in X:
-            node = self.tree
-            while node.value is None:
-                if row[node.feature] <= node.threshold: node = node.left
-                else: node = node.right
-            p = base.copy(); p.update(node.value)
-            # Handle implicit classes if pickle didn't save them in tree
-            res.append([p.get(c, 0.0) for c in self.classes_])
-        return np.array(res)
+    def _predictSingle(self, sample, node):
+        if node.value is not None:
+            return node.value
+        if sample[node.feature] <= node.threshold:
+            return self._predictSingle(sample, node.left)
+        return self._predictSingle(sample, node.right)
 
-class PureRF:
-    def __init__(self, n_estimators=100, max_depth=8, min_samples_split=5, max_features='sqrt', class_weight=None):
-        self.n = n_estimators
-        self.params = {'max_depth': max_depth, 'min_samples_split': min_samples_split, 'max_features': max_features, 'class_weight': class_weight}
+    def predict_proba(self, features):
+        predictions = []
+        baseProbabilities = {classLabel: 0.0 for classLabel in self.classes_}
+
+        for sample in features:
+            currentNode = self.tree
+            while currentNode.value is None:
+                if sample[currentNode.feature] <= currentNode.threshold:
+                    currentNode = currentNode.left
+                else:
+                    currentNode = currentNode.right
+
+            probabilities = baseProbabilities.copy()
+            probabilities.update(currentNode.value)
+            predictions.append([probabilities.get(c, 0.0) for c in self.classes_])
+
+        return np.array(predictions)
+
+
+class RandomForest:
+    def __init__(self, numEstimators=100, maxDepth=8, minSamplesSplit=5, maxFeatures='sqrt', classWeight=None):
+        self.numEstimators = numEstimators
+        self.treeParams = {
+            'maxDepth': maxDepth,
+            'minSamplesSplit': minSamplesSplit,
+            'maxFeatures': maxFeatures,
+            'classWeight': classWeight
+        }
         self.trees = []
         self.classes_ = None
-            
-    def predict_proba(self, X):
-        if not self.trees: return np.zeros((len(X), len(self.classes_)))
-        probs = np.mean([t.predict_proba(X) for t in self.trees], axis=0)
-        return probs
 
-    def predict(self, X):
-        idx = np.argmax(self.predict_proba(X), axis=1)
-        return self.classes_[idx]
-    
-    def fit(self, X, y):
-        self.classes_ = np.unique(y)
+    def predict_proba(self, features):
+        if not self.trees:
+            return np.zeros((len(features), len(self.classes_)))
+        allProbabilities = np.mean([tree.predict_proba(features) for tree in self.trees], axis=0)
+        return allProbabilities
+
+    def predict(self, features):
+        probabilities = self.predict_proba(features)
+        predictedIndices = np.argmax(probabilities, axis=1)
+        return self.classes_[predictedIndices]
+
+    def fit(self, features, labels):
         from collections import Counter
-        n_samples, n_features = X.shape
-        
-        for _ in range(self.n):
-            # Bootstrap sample
-            indices = np.random.choice(n_samples, n_samples, replace=True)
-            X_sample, y_sample = X[indices], y[indices]
-            
-            # Train a decision tree
-            tree = PureDT(**self.params)
+        self.classes_ = np.unique(labels)
+        numSamples = len(features)
+
+        for _ in range(self.numEstimators):
+            bootstrapIndices = np.random.choice(numSamples, numSamples, replace=True)
+            sampledFeatures = features[bootstrapIndices]
+            sampledLabels = labels[bootstrapIndices]
+
+            tree = DecisionTree(**self.treeParams)
             tree.classes_ = self.classes_
-            tree.tree = self._build_tree(X_sample, y_sample, depth=0)
+            tree.tree = self._buildTree(sampledFeatures, sampledLabels, depth=0)
             self.trees.append(tree)
 
-    def _build_tree(self, X, y, depth):
-        n_samples, n_features = X.shape
-        num_classes = len(np.unique(y))
-        
-        if (depth >= self.params['max_depth'] or n_samples < self.params['min_samples_split'] or num_classes == 1):
-            leaf_value = self._calculate_leaf_value(y)
-            return Node(value=leaf_value)
-        
-        feat_idxs = np.random.choice(n_features, 
-                                     int(np.sqrt(n_features)) if self.params['max_features'] == 'sqrt' else n_features, 
-                                     replace=False)
-        
-        best_feat, best_thresh = self._best_split(X, y, feat_idxs)
-        if best_feat is None:
-            leaf_value = self._calculate_leaf_value(y)
-            return Node(value=leaf_value)
-        
-        left_idxs = X[:, best_feat] <= best_thresh
-        right_idxs = X[:, best_feat] > best_thresh
-        
-        left = self._build_tree(X[left_idxs], y[left_idxs], depth + 1)
-        right = self._build_tree(X[right_idxs], y[right_idxs], depth + 1)
-        
-        return Node(feature=best_feat, threshold=best_thresh, left=left, right=right)
-    
-    def _best_split(self, X, y, feat_idxs):
-        best_gain = -1
-        split_idx, split_thresh = None, None
-        for feat in feat_idxs:
-            thresholds = np.unique(X[:, feat])
-            for thresh in thresholds:
-                gain = self._information_gain(y, X[:, feat], thresh)
-                if gain > best_gain:
-                    best_gain = gain
-                    split_idx = feat
-                    split_thresh = thresh
-        return split_idx, split_thresh
-    
-    def _information_gain(self, y, feature_column, threshold):
-        parent_entropy = self._entropy(y)
-        
-        left_idxs = feature_column <= threshold
-        right_idxs = feature_column > threshold
-        if len(y[left_idxs]) == 0 or len(y[right_idxs]) == 0:
+    def _buildTree(self, features, labels, depth):
+        numSamples, numFeatures = features.shape
+        numClasses = len(np.unique(labels))
+
+        shouldStopSplitting = (
+            depth >= self.treeParams['maxDepth'] or
+            numSamples < self.treeParams['minSamplesSplit'] or
+            numClasses == 1
+        )
+
+        if shouldStopSplitting:
+            leafValue = self._calculateLeafValue(labels)
+            return Node(value=leafValue)
+
+        numFeaturesToTry = int(np.sqrt(numFeatures)) if self.treeParams['maxFeatures'] == 'sqrt' else numFeatures
+        selectedFeatures = np.random.choice(numFeatures, numFeaturesToTry, replace=False)
+
+        bestFeature, bestThreshold = self._findBestSplit(features, labels, selectedFeatures)
+        if bestFeature is None:
+            leafValue = self._calculateLeafValue(labels)
+            return Node(value=leafValue)
+
+        leftMask = features[:, bestFeature] <= bestThreshold
+        rightMask = features[:, bestFeature] > bestThreshold
+
+        leftNode = self._buildTree(features[leftMask], labels[leftMask], depth + 1)
+        rightNode = self._buildTree(features[rightMask], labels[rightMask], depth + 1)
+
+        return Node(feature=bestFeature, threshold=bestThreshold, left=leftNode, right=rightNode)
+
+    def _findBestSplit(self, features, labels, featureIndices):
+        bestGain = -1
+        bestFeatureIndex = None
+        bestThreshold = None
+
+        for featureIndex in featureIndices:
+            thresholds = np.unique(features[:, featureIndex])
+            for threshold in thresholds:
+                informationGain = self._calculateInformationGain(labels, features[:, featureIndex], threshold)
+                if informationGain > bestGain:
+                    bestGain = informationGain
+                    bestFeatureIndex = featureIndex
+                    bestThreshold = threshold
+
+        return bestFeatureIndex, bestThreshold
+
+    def _calculateInformationGain(self, labels, featureColumn, threshold):
+        parentEntropy = self._calculateEntropy(labels)
+
+        leftMask = featureColumn <= threshold
+        rightMask = featureColumn > threshold
+
+        if len(labels[leftMask]) == 0 or len(labels[rightMask]) == 0:
             return 0
-        
-        n = len(y)
-        n_left, n_right = len(y[left_idxs]), len(y[right_idxs])
-        e_left, e_right = self._entropy(y[left_idxs]), self._entropy(y[right_idxs])
-        child_entropy = (n_left / n) * e_left + (n_right / n) * e_right
-        
-        ig = parent_entropy - child_entropy
-        return ig
-    
-    def _entropy(self, y):
+
+        totalSamples = len(labels)
+        leftSamples = len(labels[leftMask])
+        rightSamples = len(labels[rightMask])
+
+        leftEntropy = self._calculateEntropy(labels[leftMask])
+        rightEntropy = self._calculateEntropy(labels[rightMask])
+
+        childEntropy = (leftSamples / totalSamples) * leftEntropy + (rightSamples / totalSamples) * rightEntropy
+
+        return parentEntropy - childEntropy
+
+    def _calculateEntropy(self, labels):
         from collections import Counter
-        hist = Counter(y)
-        ps = [v / len(y) for v in hist.values()]
-        return -sum(p * np.log2(p + 1e-9) for p in ps)
-    
-    def _calculate_leaf_value(self, y):
+        labelCounts = Counter(labels)
+        probabilities = [count / len(labels) for count in labelCounts.values()]
+        return -sum(p * np.log2(p + 1e-9) for p in probabilities)
+
+    def _calculateLeafValue(self, labels):
         from collections import Counter
-        hist = Counter(y)
-        total = len(y)
-        return {cls: count / total for cls, count in hist.items()}
+        labelCounts = Counter(labels)
+        totalSamples = len(labels)
+        return {classLabel: count / totalSamples for classLabel, count in labelCounts.items()}
+
 
 class SpecialistCommittee:
     def __init__(self):
-        self.model_bal = None
-        self.model_gem = None
-        self.model_cla = None
+        self.balancedModel = None
+        self.geminiModel = None
+        self.claudeModel = None
         self.classes_ = None
 
-    def predict_proba(self, X):
-        p1 = self.model_bal.predict_proba(X)
-        p2 = self.model_gem.predict_proba(X)
-        p3 = self.model_cla.predict_proba(X)
-        return (p1 + p2 + p3) / 3.0
+    def predict_proba(self, features):
+        balancedProbs = self.balancedModel.predict_proba(features)
+        geminiProbs = self.geminiModel.predict_proba(features)
+        claudeProbs = self.claudeModel.predict_proba(features)
+        return (balancedProbs + geminiProbs + claudeProbs) / 3.0
 
-    def predict(self, X):
-        probs = self.predict_proba(X)
-        idx = np.argmax(probs, axis=1)
-        return self.classes_[idx]
-    
-    def fit(self, X, y):
-        self.classes_ = np.unique(y)
-        self.model_bal.fit(X, y)
-        self.model_gem.fit(X, y)
-        self.model_cla.fit(X, y)
+    def predict(self, features):
+        probabilities = self.predict_proba(features)
+        predictedIndices = np.argmax(probabilities, axis=1)
+        return self.classes_[predictedIndices]
+
+    def fit(self, features, labels):
+        self.classes_ = np.unique(labels)
+        self.balancedModel.fit(features, labels)
+        self.geminiModel.fit(features, labels)
+        self.claudeModel.fit(features, labels)
+
 
 class HierarchicalModel:
-    def __init__(self, gatekeeper, committee, mu, sig):
+    def __init__(self, gatekeeper, committee, featureMean, featureStd):
         self.gatekeeper = gatekeeper
         self.committee = committee
-        self.mu = mu
-        self.sig = sig
-        
-    def predict(self, X_raw):
-        # Normalize using training stats saved in the object
-        X = (X_raw - self.mu) / self.sig
-        
-        # Gatekeeper
-        idx_gpt = np.where(self.gatekeeper.classes_ == 'ChatGPT')[0][0]
-        prob_gpt = self.gatekeeper.predict_proba(X)[:, idx_gpt]
-        
-        # Committee
-        pred_spec = self.committee.predict(X)
-        
-        final_preds = []
-        for i, p in enumerate(prob_gpt):
-            if p > 0.55: 
-                final_preds.append('ChatGPT')
+        self.featureMean = featureMean
+        self.featureStd = featureStd
+
+    def predict(self, rawFeatures):
+        normalizedFeatures = (rawFeatures - self.featureMean) / self.featureStd
+
+        chatGptIndex = np.where(self.gatekeeper.classes_ == 'ChatGPT')[0][0]
+        chatGptProbabilities = self.gatekeeper.predict_proba(normalizedFeatures)[:, chatGptIndex]
+
+        specialistPredictions = self.committee.predict(normalizedFeatures)
+
+        finalPredictions = []
+        for i, probability in enumerate(chatGptProbabilities):
+            if probability > 0.55:
+                finalPredictions.append('ChatGPT')
             else:
-                final_preds.append(pred_spec[i])
-        return final_preds
+                finalPredictions.append(specialistPredictions[i])
 
-# ============================================================================
-# 2. FEATURE EXTRACTION (For Test Data)
-# ============================================================================
+        return finalPredictions
 
-def extract_features(df):
-    # Confirmed Keywords
-    gpt_kw = ['day', 'song', 'life', 'translation', 'learning', 'certain', 'stuck', 'tricky', 'slightly', 'concepts']
-    gem_kw = ['phone', 'integration', 'collab', 'video', 'previous', 'overview', 'docs', 'ever', 'google', 'creative']
-    cla_kw = ['implementation', 'cursor', 'running', 'frontend', 'apps', 'less', 'before', 'documents', 'schedule', 'used']
-    trap_kw = ['trick', 'trap', 'weird', 'ignore', 'simon', 'jailbreak', 'limit', 'instruction', 'code word']
 
-    def get_score(text, kws):
-        txt = str(text).lower()
-        return sum(1 for k in kws if k in txt)
+def extract_features(dataframe):
+    chatGptKeywords = ['day', 'song', 'life', 'translation', 'learning', 'certain', 'stuck', 'tricky', 'slightly', 'concepts']
+    geminiKeywords = ['phone', 'integration', 'collab', 'video', 'previous', 'overview', 'docs', 'ever', 'google', 'creative']
+    claudeKeywords = ['implementation', 'cursor', 'running', 'frontend', 'apps', 'less', 'before', 'documents', 'schedule', 'used']
+    trapKeywords = ['trick', 'trap', 'weird', 'ignore', 'simon', 'jailbreak', 'limit', 'instruction', 'code word']
 
-    text_cols = [
+    def calculateKeywordScore(text, keywords, weight=1.0):
+        if pd.isna(text) or text == '':
+            return 0.0
+        lowerText = str(text).lower()
+        return sum(weight for keyword in keywords if keyword in lowerText)
+
+    textColumns = [
         "In your own words, what kinds of tasks would you use this model for?",
         "Think of one task where this model gave you a suboptimal response. What did the response look like, and why did you find it suboptimal?",
         "When you verify a response from this model, how do you usually go about it?"
     ]
-    
-    # Handle missing columns in test data gracefully
-    existing_cols = [c for c in text_cols if c in df.columns]
-    if not existing_cols:
-        df_text = pd.Series([""] * len(df))
-    else:
-        df_text = df[existing_cols].apply(lambda row: ' '.join(row.values.astype(str)).lower(), axis=1)
-    
-    txt_feats = []
-    for t in df_text:
-        txt_feats.append([get_score(t, gpt_kw), get_score(t, gem_kw), get_score(t, cla_kw), get_score(t, trap_kw)])
-    
-    def safe_rate(x):
-        m = re.match(r'^(\d+)', str(x))
-        return int(m.group(1)) if m else 0
-    
-    r_cols = [
+
+    textFeatures = []
+    for columnName in textColumns:
+        columnFeatures = []
+        if columnName in dataframe.columns:
+            for text in dataframe[columnName]:
+                features = [
+                    calculateKeywordScore(text, chatGptKeywords, 1.0),
+                    calculateKeywordScore(text, geminiKeywords, 2.0),
+                    calculateKeywordScore(text, claudeKeywords, 1.5),
+                    calculateKeywordScore(text, trapKeywords, 3.0)
+                ]
+                columnFeatures.append(features)
+        else:
+            for _ in range(len(dataframe)):
+                columnFeatures.append([0.0, 0.0, 0.0, 0.0])
+        textFeatures.append(np.array(columnFeatures))
+
+    textFeatureMatrix = np.hstack(textFeatures)
+
+    def extractRating(value):
+        match = re.match(r'^(\d+)', str(value))
+        return int(match.group(1)) if match else 0
+
+    ratingColumns = [
         'How likely are you to use this model for academic tasks?',
         'Based on your experience, how often has this model given you a response that felt suboptimal?',
         'How often do you expect this model to provide responses with references or supporting evidence?',
         'How often do you verify this model\'s responses?'
     ]
-    
-    r_data = []
-    for c in r_cols:
-        if c in df.columns:
-            r_data.append(df[c].apply(safe_rate).values)
+
+    ratingData = []
+    for columnName in ratingColumns:
+        if columnName in dataframe.columns:
+            ratingData.append(dataframe[columnName].apply(extractRating).values)
         else:
-            r_data.append(np.zeros(len(df)))
-            
-    ratings = np.array(r_data).T / 5.0
-    
-    all_tasks = ['Math', 'code', 'Data', 'Explaining', 'Converting', 'essays', 'Drafting']
-    task_mat = np.zeros((len(df), len(all_tasks)))
-    
-    if 'Which types of tasks do you feel this model handles best? (Select all that apply.)' in df.columns:
-        for i, r in enumerate(df['Which types of tasks do you feel this model handles best? (Select all that apply.)']):
-            if pd.notna(r):
-                for j, t in enumerate(all_tasks):
-                    if t in str(r): task_mat[i, j] = 1
+            ratingData.append(np.zeros(len(dataframe)))
 
-    X = np.hstack([ratings, np.array(txt_feats), task_mat])
-    return X
+    ratingMatrix = np.array(ratingData).T / 5.0
 
-# ============================================================================
-# 3. PREDICT_ALL
-# ============================================================================
+    taskTypes = ['Math', 'code', 'Data', 'Explaining', 'Converting', 'essays', 'Drafting']
+    taskMatrix = np.zeros((len(dataframe), len(taskTypes)))
 
-# Global model cache
+    taskColumnName = 'Which types of tasks do you feel this model handles best? (Select all that apply.)'
+    if taskColumnName in dataframe.columns:
+        for rowIndex, response in enumerate(dataframe[taskColumnName]):
+            if pd.notna(response):
+                for taskIndex, taskType in enumerate(taskTypes):
+                    if taskType in str(response):
+                        taskMatrix[rowIndex, taskIndex] = 1
+
+    allFeatures = np.hstack([ratingMatrix, textFeatureMatrix, taskMatrix])
+    return allFeatures
+
+
 _MODEL = None
 
 
 def predict_all(filename):
     """
     Make predictions for the data in filename.
-    Loads 'model.pkl' which must be in the same directory.
+    Loads 'model.npz' which must be in the same directory.
     """
     global _MODEL
-    
-    # 1. Load Model (numpy .npz storage, no pickle/json at runtime)
-    def load_rf_from_npz(npz, prefix):
-        # prefix examples: 'gatekeeper', 'committee_model_bal', etc.
-        classes = np.array(npz[f'{prefix}_classes'])
-        n_trees = int(npz[f'{prefix}_n_trees'])
 
-        class_list = classes.tolist()
+    def loadRandomForestFromNpz(npzFile, prefix):
+        classLabels = np.array(npzFile[f'{prefix}_classes'])
+        numTrees = int(npzFile[f'{prefix}_n_trees'])
+        classList = classLabels.tolist()
 
-        # For each tree, load node arrays
-        trees = []
-        for i in range(n_trees):
-            p = f'{prefix}_tree{i}_'
-            feats = npz[p + 'features']
-            th = npz[p + 'thresholds']
-            left = npz[p + 'lefts']
-            right = npz[p + 'rights']
-            vidx = npz[p + 'value_idxs']
-            leaf_vals = npz[p + 'leaf_values']
-            trees.append({'features': feats, 'thresholds': th, 'lefts': left, 'rights': right, 'value_idxs': vidx, 'leaf_values': leaf_vals})
+        treeData = []
+        for treeIndex in range(numTrees):
+            treePrefix = f'{prefix}_tree{treeIndex}_'
+            features = npzFile[treePrefix + 'features']
+            thresholds = npzFile[treePrefix + 'thresholds']
+            leftIndices = npzFile[treePrefix + 'lefts']
+            rightIndices = npzFile[treePrefix + 'rights']
+            valueIndices = npzFile[treePrefix + 'value_idxs']
+            leafValues = npzFile[treePrefix + 'leaf_values']
 
-        # Build a lightweight RF object that exposes predict_proba and predict
-        class ArrayRF:
+            treeData.append({
+                'features': features,
+                'thresholds': thresholds,
+                'lefts': leftIndices,
+                'rights': rightIndices,
+                'value_idxs': valueIndices,
+                'leaf_values': leafValues
+            })
+
+        class ArrayBasedRandomForest:
             def __init__(self, classes, trees):
                 self.classes_ = np.array(classes)
                 self._trees = trees
 
-            def predict_proba(self, X):
+            def predict_proba(self, features):
                 if len(self._trees) == 0:
-                    return np.zeros((len(X), len(self.classes_)))
-                probs = []
-                for t in self._trees:
-                    tree_probs = []
-                    feats = t['features']
-                    th = t['thresholds']
-                    left = t['lefts'].astype(int)
-                    right = t['rights'].astype(int)
-                    vidx = t['value_idxs'].astype(int)
-                    leaf_vals = t['leaf_values']
-                    for row in X:
-                        node = len(feats) - 1  # root is the last node appended during serialization
+                    return np.zeros((len(features), len(self.classes_)))
+
+                allTreeProbabilities = []
+                for treeDict in self._trees:
+                    treeProbabilities = []
+                    treeFeatures = treeDict['features']
+                    treeThresholds = treeDict['thresholds']
+                    leftIndices = treeDict['lefts'].astype(int)
+                    rightIndices = treeDict['rights'].astype(int)
+                    valueIndices = treeDict['value_idxs'].astype(int)
+                    leafValues = treeDict['leaf_values']
+
+                    for sample in features:
+                        nodeIndex = len(treeFeatures) - 1
                         while True:
-                            f = int(feats[node])
-                            if f == -1:
-                                v = leaf_vals[vidx[node]]
-                                tree_probs.append(v)
+                            featureIndex = int(treeFeatures[nodeIndex])
+                            if featureIndex == -1:
+                                probability = leafValues[valueIndices[nodeIndex]]
+                                treeProbabilities.append(probability)
                                 break
-                            if row[f] <= th[node]:
-                                node = int(left[node])
+
+                            if sample[featureIndex] <= treeThresholds[nodeIndex]:
+                                nodeIndex = int(leftIndices[nodeIndex])
                             else:
-                                node = int(right[node])
-                    probs.append(np.array(tree_probs))
-                probs = np.mean(np.stack(probs, axis=0), axis=0)
-                return probs
+                                nodeIndex = int(rightIndices[nodeIndex])
 
-            def predict(self, X):
-                idx = np.argmax(self.predict_proba(X), axis=1)
-                return self.classes_[idx]
+                    allTreeProbabilities.append(np.array(treeProbabilities))
 
-        return ArrayRF(class_list, trees)
+                averageProbabilities = np.mean(np.stack(allTreeProbabilities, axis=0), axis=0)
+                return averageProbabilities
+
+            def predict(self, features):
+                probabilities = self.predict_proba(features)
+                predictedIndices = np.argmax(probabilities, axis=1)
+                return self.classes_[predictedIndices]
+
+        return ArrayBasedRandomForest(classList, treeData)
 
     if _MODEL is None:
         try:
-            npz = np.load('model.npz', allow_pickle=True)
+            npzFile = np.load('model.npz', allow_pickle=True)
         except FileNotFoundError:
             print("Error: model.npz not found. Please run training to create model.npz.")
             return ["ChatGPT"] * len(pd.read_csv(filename))
 
-        gate = load_rf_from_npz(npz, 'gatekeeper')
-        comm_bal = load_rf_from_npz(npz, 'committee_model_bal')
-        comm_gem = load_rf_from_npz(npz, 'committee_model_gem')
-        comm_cla = load_rf_from_npz(npz, 'committee_model_cla')
+        gatekeeperModel = loadRandomForestFromNpz(npzFile, 'gatekeeper')
+        balancedCommitteeModel = loadRandomForestFromNpz(npzFile, 'committee_model_bal')
+        geminiCommitteeModel = loadRandomForestFromNpz(npzFile, 'committee_model_gem')
+        claudeCommitteeModel = loadRandomForestFromNpz(npzFile, 'committee_model_cla')
 
-        # Load normalization stats
-        mu = npz['mu']
-        sig = npz['sig']
+        featureMean = npzFile['mu']
+        featureStd = npzFile['sig']
 
-        # Build committee wrapper
-        class Comm:
-            def __init__(self, bal, gem, cla):
-                self.model_bal = bal
-                self.model_gem = gem
-                self.model_cla = cla
-                # assume all share same classes
-                self.classes_ = self.model_bal.classes_
+        class Committee:
+            def __init__(self, balancedModel, geminiModel, claudeModel):
+                self.balancedModel = balancedModel
+                self.geminiModel = geminiModel
+                self.claudeModel = claudeModel
+                self.classes_ = self.balancedModel.classes_
 
-            def predict_proba(self, X):
-                return (self.model_bal.predict_proba(X) + self.model_gem.predict_proba(X) + self.model_cla.predict_proba(X)) / 3.0
+            def predict_proba(self, features):
+                balancedProbs = self.balancedModel.predict_proba(features)
+                geminiProbs = self.geminiModel.predict_proba(features)
+                claudeProbs = self.claudeModel.predict_proba(features)
+                return (balancedProbs + geminiProbs + claudeProbs) / 3.0
 
-            def predict(self, X):
-                probs = self.predict_proba(X)
-                return self.classes_[np.argmax(probs, axis=1)]
+            def predict(self, features):
+                probabilities = self.predict_proba(features)
+                return self.classes_[np.argmax(probabilities, axis=1)]
 
-        _MODEL = HierarchicalModel(gate, Comm(comm_bal, comm_gem, comm_cla), mu, sig)
+        committee = Committee(balancedCommitteeModel, geminiCommitteeModel, claudeCommitteeModel)
+        _MODEL = HierarchicalModel(gatekeeperModel, committee, featureMean, featureStd)
 
-    # 2. Load Test Data
-    df = pd.read_csv(filename)
-    
-    # 3. Extract Features
-    X = extract_features(df)
-    
-    # 4. Predict (Normalization is handled inside the model object)
-    return _MODEL.predict(X)
+    testData = pd.read_csv(filename)
+    features = extract_features(testData)
+
+    return _MODEL.predict(features)
