@@ -394,31 +394,3 @@ def predict_all(filename):
     
     # 4. Predict (Normalization is handled inside the model object)
     return _MODEL.predict(X)
-
-if __name__ == "__main__":
-    predictions = predict_all("test_data.csv")
-    
-    for pred in predictions:
-        print(pred)
-
-    # Compute and show test accuracy if a ground-truth column is present
-    # try:
-    #     df_test = pd.read_csv("test_data.csv")
-    # except Exception as e:
-    #     print("Could not reload test_data.csv for accuracy:", e)
-    # else:
-    #     # Heuristic search for a ground-truth column
-    #     cols = list(df_test.columns)
-    #     candidates = [c for c in cols if any(k in c.lower() for k in ("label", "ground", "true", "target", "which model", "model generated"))]
-    #     if not candidates:
-    #         print("No ground-truth column found in test_data.csv (looked for label/true/ground/target/which model). Cannot compute accuracy.")
-    #     else:
-    #         gt_col = candidates[0]
-    #         y_true = df_test[gt_col].astype(str).values
-    #         y_pred = np.array(predictions).astype(str)
-    #         n = min(len(y_true), len(y_pred))
-    #         if n == 0:
-    #             print("No samples to evaluate.")
-    #         else:
-    #             acc = (y_true[:n] == y_pred[:n]).mean()
-    #             print(f"Test accuracy (column='{gt_col}'): {acc:.4f} over {n} samples")
