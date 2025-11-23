@@ -216,10 +216,9 @@ class SpecialistCommittee:
 
 
 def main():
-    print("Loading Training Data...")
+    print("Loading Training Data")
     trainingData = pd.read_csv("training_data.csv")
 
-    print("Extracting Features...")
     features = extract_features(trainingData)
     labels = trainingData['label'].values
 
@@ -237,7 +236,7 @@ def main():
     )
     gatekeeperModel.fit(normalizedFeatures, binaryLabels)
 
-    print("Training Stage 2: Specialist Committee...")
+    print("Training Stage 2: Specialist Committee")
     nonChatGptMask = labels != 'ChatGPT'
     committee = SpecialistCommittee()
 
@@ -262,7 +261,7 @@ def main():
 
     committee.fit(normalizedFeatures[nonChatGptMask], labels[nonChatGptMask])
 
-    print("Saving to model.npz...")
+    print("Saving to model.npz")
     hierarchicalModel = HierarchicalModel(gatekeeperModel, committee, featureMean, featureStd)
 
     def flattenTree(rootNode, classLabels):
@@ -320,7 +319,7 @@ def main():
     modelData['sig'] = np.array(featureStd, dtype=float)
 
     np.savez('model.npz', **modelData)
-    print("Done! Created 'model.npz'.")
+    print("Created 'model.npz'.")
 
 
 if __name__ == "__main__":
